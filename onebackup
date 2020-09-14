@@ -1,0 +1,105 @@
+#!/bin/bash
+
+CONFIGFILE=/opt/onebackup/onebackup.conf
+
+source $CONFIGFILE
+TIME_FORMAT='%Y%m%d-%H%M'
+cTime=$(date +"${TIME_FORMAT}")
+LOGFILENAME=$LOG_PATH/${cTime}.log
+CREDENTIALS="--defaults-file=$CREDENTIAL_FILE"
+
+[ ! -d $LOG_PATH ] && ${MKDIR} -p ${LOG_PATH}
+echo "" > ${LOGFILENAME}
+echo "<<<<<<   Oned Daily Backup Report :: `date +%D`  >>>>>>" >> ${LOGFILENAME}
+echo "" >> ${LOGFILENAME}
+
+### Make a Backup ###
+check_config(){
+        [ ! -f $CONFIGFILE ] && close_on_error "Config file not found, make sure config file is correct"
+}
+db_backup(){
+        if [ "$MYSQL_DB_NAMES" == "ALL" ]; then
+		DATABASES=`$MYSQL $CREDENTIALS -h $MYSQL_HOST -P $MYSQL_PORT -Bse 'show databases' | grep -Ev "^(Database|mysql|performance_schema|information_schema)"$`
+        else
+		DATABASES=$MYSQL_DB_NAMES
+        fi
+
+        db=""
+        [ ! -d $BACKUP_PATH ] && ${MKDIR} -p $BACKUP_PATH
+                [ $VERBOSE -eq 1 ] && echo "******************************** Dumping MySQL Database *********************************"
+                mkdir -p ${BACKUP_PATH}/${cTime}
+        for db in $DATABASES
+        do
+                FILE_NAME="${db}-${cTime}.gz"
+                FILE_PATH="${BACKUP_PATH}/${cTime}/"
+                FILENAMEPATH="$FILE_PATH$FILE_NAME"
+                [ $VERBOSE -eq 1 ] && echo -en "Database> $db... \n"
+                ${MYSQLDUMP} ${CREDENTIALS} -h ${MYSQL_HOST} -P $MYSQL_PORT $db | ${GZIP} -9 > $FILENAMEPATH
+                echo "DB Name  :: DB Size   File Path" >> ${LOGFILENAME}
+                echo "$db   :: `du -sh ${FILENAMEPATH}`"  >> ${LOGFILENAME}
+        done
+        [ $VERBOSE -eq 1 ] && echo "******************** Mysql Backup completed in ${FILE_PATH} ********************"
+}
+one_backup(){
+        if [ ! -d $ONE_CONFIG_PATH ]; then
+                close_on_error "It seems this host not a one host !"
+        else
+                [ ! -d $BACKUP_PATH ] && ${MKDIR} -p $BACKUP_PATH
+                [ $VERBOSE -eq 1 ] && echo "******************************** Archiving Oned Files *********************************"
+                echo "" >> ${LOGFILENAME}
+                echo "File Name  :: File Size   File Path" >> ${LOGFILENAME}
+                mkdir -p ${BACKUP_PATH}/${cTime}
+                FILE_NAME="onedata-${cTime}"
+                FILE_PATH="${BACKUP_PATH}/${cTime}/"
+                FILENAMEPATH="$FILE_PATH$FILE_NAME"
+                [ $VERBOSE -eq 1 ] && echo -en "Oned Config Backup \n"
+                ${TAR} -czPf ${FILENAMEPATH}-config.tgz $ONE_CONFIG_PATH
+		echo "${FILE_NAME}-config.tgz   :: `du -sh ${FILENAMEPATH}-config.tgz`"  >> ${LOGFILENAME}
+                [ $VERBOSE -eq 1 ] && echo -en "Oned Remote Backup \n"
+                ${TAR} -czPf ${FILENAMEPATH}-remote.tgz $ONE_REMOTE_PATH
+		echo "${FILE_NAME}-remote.tgz   :: `du -sh ${FILENAMEPATH}-remote.tgz`"  >> ${LOGFILENAME}
+                [ $VERBOSE -eq 1 ] && echo -en "Oned SSH Backup \n"
+                ${TAR} -czPf ${FILENAMEPATH}-ssh.tgz $ONE_SSH_PATH
+		echo "${FILE_NAME}-ssh.tgz   :: `du -sh ${FILENAMEPATH}-ssh.tgz`"  >> ${LOGFILENAME}
+        fi
+        [ $VERBOSE -eq 1 ] && echo "******************** Oned Backup completed in ${FILE_PATH} ********************"
+}
+
+### close_on_error on demand with message ###
+close_on_error(){
+        echo "$@"
+        exit 99
+}
+
+### Make sure bins exists.. else close_on_error
+check_cmds(){
+        [ ! -x $GZIP ] && close_on_error "FILENAME $GZIP does not exists. Make sure correct path is set in $CONFIGFILE."
+        [ ! -x $MYSQL ] && close_on_error "FILENAME $MYSQL does not exists. Make sure correct path is set in $CONFIGFILE."
+        [ ! -x $MYSQLDUMP ] && close_on_error "FILENAME $MYSQLDUMP does not exists. Make sure correct path is set in $CONFIGFILE."
+        [ ! -x $RM ] && close_on_error "FILENAME $RM does not exists. Make sure correct path is set in $CONFIGFILE."
+        [ ! -x $MKDIR ] && close_on_error "FILENAME $MKDIR does not exists. Make sure correct path is set in $CONFIGFILE."
+        [ ! -x $MYSQLADMIN ] && close_on_error "FILENAME $MYSQLADMIN does not exists. Make sure correct path is set in $CONFIGFILE."
+        [ ! -x $GREP ] && close_on_error "FILENAME $GREP does not exists. Make sure correct path is set in $CONFIGFILE."
+        [ ! -x $TAR ] && close_on_error "FILENAME $TAR does not exists. Make sure correct path is set in $CONFIGFILE."
+}
+
+### Make sure we can connect to server ...
+check_mysql_connection(){
+        ${MYSQLADMIN} ${CREDENTIALS} -h ${MYSQL_HOST} -P ${MYSQL_PORT} ping | ${GREP} 'alive'>/dev/null
+        [ $? -eq 0 ] || close_on_error "Error: Cannot connect to MySQL Server. Make sure username and password setup correctly in $CONFIGFILE"
+}
+
+send_report(){
+        if [ $SENDEMAIL -eq 1 ]
+        then
+                cat ${LOGFILENAME} | mail -s "OneBackup Reporte - `date +%D`" ${EMAILTO}
+        fi
+}
+
+### main ####
+check_config
+check_cmds
+check_mysql_connection
+db_backup
+one_backup
+send_report
